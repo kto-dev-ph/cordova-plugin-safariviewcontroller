@@ -6,270 +6,133 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.TextUtils;
-import android.util.Log;
-
 import androidx.annotation.ColorInt;
-import androidx.browser.customtabs.CustomTabsClient;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsSession;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.ActivityOptionsCompat;
-
-import org.apache.cordova.CallbackContext;
-import org.apache.cordova.CordovaInterface;
-import org.apache.cordova.CordovaPlugin;
-import org.apache.cordova.CordovaWebView;
-import org.apache.cordova.PluginResult;
+import android.text.TextUtils;
+import android.util.Log;
+import org.apache.cordova.*;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.chromium.customtabsclient.shared.CustomTabsHelper;
 
 public class ChromeCustomTabPlugin extends CordovaPlugin {
+    private static final String TAG = "ChromeCustomTabPlugin";
+    private static final int CUSTOM_TAB_REQUEST_CODE = 1001;
 
-    public static final String TAG = "ChromeCustomTabPlugin";
-    public static final int CUSTOM_TAB_REQUEST_CODE = 1;
-
-    private CustomTabServiceHelper mCustomTabPluginHelper;
-    private boolean wasConnected;
+    private CustomTabServiceHelper helper;
     private CallbackContext callbackContext;
-    private Bundle mStartAnimationBundle;
+    private Bundle animationBundle;
 
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
         super.initialize(cordova, webView);
-        mCustomTabPluginHelper = new CustomTabServiceHelper(cordova.getActivity());
+        helper = new CustomTabServiceHelper(cordova.getActivity());
     }
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
-        final Context context = this.cordova.getContext();
+        this.callbackContext = callbackContext;
 
-        switch (action) {
-            case "isAvailable":
-                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, mCustomTabPluginHelper.isAvailable()));
-                return true;
+        if ("isAvailable".equals(action)) {
+            boolean available = helper.isAvailable();
+            callbackContext.success(available ? 1 : 0);
+            return true;
+        }
 
-            case "show": {
-                final JSONObject options = args.getJSONObject(0);
-                final String url = options.optString("url");
-                if (TextUtils.isEmpty(url)) {
-                    JSONObject result = new JSONObject();
-                    result.put("error", "expected argument 'url' to be non empty string.");
-                    PluginResult pluginResult = new PluginResult(PluginResult.Status.ERROR, result);
-                    callbackContext.sendPluginResult(pluginResult);
-                    return true;
-                }
+        if ("show".equals(action)) {
+            JSONObject options = args.getJSONObject(0);
+            String url = options.optString("url");
+            String color = options.optString("toolbarColor", "#CCCCCC");
+            boolean share = options.optBoolean("showDefaultShareMenuItem", false);
+            boolean animated = options.optBoolean("animated", true);
+            String transition = animated ? options.optString("transition", "slide") : "";
 
-                final String toolbarColor = options.optString("toolbarColor");
-                final Boolean showDefaultShareMenuItem = options.optBoolean("showDefaultShareMenuItem");
-                final Boolean animated = options.optBoolean("animated", true);
-                String transition = animated ? options.optString("transition", "slide") : "";
-                PluginResult pluginResult;
-                JSONObject result = new JSONObject();
-
-                if (isAvailable()) {
-                    try {
-                        this.show(url, getColor(toolbarColor), showDefaultShareMenuItem, transition);
-                        result.put("event", "loaded");
-                        pluginResult = new PluginResult(PluginResult.Status.OK, result);
-                        pluginResult.setKeepCallback(true);
-                        this.callbackContext = callbackContext;
-                    } catch (Exception ex) {
-                        result.put("error", ex.getMessage());
-                        pluginResult = new PluginResult(PluginResult.Status.ERROR, result);
-                    }
-                } else {
-                    result.put("error", "custom tabs are not available");
-                    pluginResult = new PluginResult(PluginResult.Status.ERROR, result);
-                }
-                callbackContext.sendPluginResult(pluginResult);
+            if (TextUtils.isEmpty(url)) {
+                callbackContext.error("URL is required.");
                 return true;
             }
 
-            case "getViewHandlerPackages": {
-                PluginResult pluginResult;
-                JSONObject result = new JSONObject();
-                result.put("defaultHandler", CustomTabsHelper.getDefaultViewHandlerPackageName(context));
-                result.put("customTabsImplementations", new JSONArray(CustomTabsHelper.getPackagesSupportingCustomTabs(context)));
-                pluginResult = new PluginResult(PluginResult.Status.OK, result);
-                callbackContext.sendPluginResult(pluginResult);
-                return true;
+            try {
+                openChromeCustomTab(url, Color.parseColor(color), share, transition);
+            } catch (Exception e) {
+                callbackContext.error("Failed to open Chrome Custom Tab: " + e.getMessage());
             }
 
-            case "useCustomTabsImplementation": {
-                PluginResult pluginResult;
-                JSONObject result = new JSONObject();
-                final String packageName = args.optString(0);
-                if (TextUtils.isEmpty(packageName)) {
-                    result.put("error", "expected argument 'packageName' to be non empty string.");
-                    pluginResult = new PluginResult(PluginResult.Status.ERROR, result);
-                } else {
-                    try {
-                        mCustomTabPluginHelper.setPackageNameToBind(packageName, context);
-                        pluginResult = new PluginResult(PluginResult.Status.OK, true);
-                    } catch (CustomTabsHelper.InvalidPackageException e) {
-                        pluginResult = new PluginResult(PluginResult.Status.ERROR, "Invalid package: " + packageName);
-                    }
-                }
-                callbackContext.sendPluginResult(pluginResult);
-                return true;
-            }
-
-            case "connectToService":
-                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, bindCustomTabsService()));
-                return true;
-
-            case "warmUp":
-                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, warmUp()));
-                return true;
-
-            case "mayLaunchUrl":
-                final String url = args.getString(0);
-                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, mayLaunchUrl(url)));
-                return true;
+            return true;
         }
 
         return false;
     }
 
-    private boolean isAvailable() {
-        return mCustomTabPluginHelper.isAvailable();
-    }
+    private void openChromeCustomTab(String url, @ColorInt int color, boolean share, String transition) {
+        CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder(helper.getSession());
+        builder.setToolbarColor(color);
+        if (share) builder.addDefaultShareMenuItem();
+        if (!TextUtils.isEmpty(transition)) setupTransition(builder, transition);
 
-    private void show(String url, @ColorInt int toolbarColor, boolean showDefaultShareMenuItem, String transition) {
-        CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder(getSession())
-                .setToolbarColor(toolbarColor);
+        CustomTabsIntent intent = builder.build();
 
-        if (showDefaultShareMenuItem)
-            builder.addDefaultShareMenuItem();
-
-        if (!TextUtils.isEmpty(transition))
-            addTransition(builder, transition);
-
-        CustomTabsIntent customTabsIntent = builder.build();
-
-        String resolvedPackageName = CustomTabsHelper.getPackageNameToUse(cordova.getActivity());
-
-        if (resolvedPackageName == null) {
-            resolvedPackageName = "com.android.chrome"; // fallback
-            Log.w(TAG, "Custom Tabs implementation not found. Falling back to com.android.chrome");
-        } else {
-            Log.d(TAG, "Using custom tabs package: " + resolvedPackageName);
-        }
-
+        // Force Chrome
+        final String chromePackage = "com.android.chrome";
         try {
-            cordova.getActivity().getPackageManager().getPackageInfo(resolvedPackageName, 0);
-            customTabsIntent.intent.setPackage(resolvedPackageName);
+            cordova.getActivity().getPackageManager().getPackageInfo(chromePackage, 0);
         } catch (Exception e) {
-            Log.e(TAG, "Resolved package not found on device: " + resolvedPackageName);
+            throw new RuntimeException("Chrome is not installed.");
         }
 
-        startCustomTabActivity(url, customTabsIntent.intent);
+        intent.intent.setPackage(chromePackage); // this is key
+        launchCustomTab(url, intent.intent);
     }
 
-    private void addTransition(CustomTabsIntent.Builder builder, String transition) {
-        final String animType = "anim";
+    private void setupTransition(CustomTabsIntent.Builder builder, String transition) {
+        Activity activity = cordova.getActivity();
         switch (transition) {
             case "slide":
-            default:
-                mStartAnimationBundle = ActivityOptionsCompat.makeCustomAnimation(
-                        cordova.getActivity(),
-                        getIdentifier("slide_in_right", animType),
-                        getIdentifier("slide_out_left", animType)).toBundle();
-                builder.setExitAnimations(
-                        cordova.getActivity(),
-                        getIdentifier("slide_in_left", animType),
-                        getIdentifier("slide_out_right", animType));
+                animationBundle = ActivityOptionsCompat.makeCustomAnimation(
+                        activity,
+                        getIdentifier("slide_in_right", "anim"),
+                        getIdentifier("slide_out_left", "anim")
+                ).toBundle();
+                builder.setExitAnimations(activity,
+                        getIdentifier("slide_in_left", "anim"),
+                        getIdentifier("slide_out_right", "anim")
+                );
+                break;
         }
     }
 
-    private void startCustomTabActivity(String url, Intent intent) {
+    private void launchCustomTab(String url, Intent intent) {
         intent.setData(Uri.parse(url));
-        if (mStartAnimationBundle == null)
-            cordova.startActivityForResult(this, intent, CUSTOM_TAB_REQUEST_CODE);
-        else {
-            cordova.setActivityResultCallback(this);
-            ActivityCompat.startActivityForResult(cordova.getActivity(), intent, CUSTOM_TAB_REQUEST_CODE, mStartAnimationBundle);
+        if (animationBundle != null) {
+            ActivityCompat.startActivityForResult(
+                    cordova.getActivity(), intent, CUSTOM_TAB_REQUEST_CODE, animationBundle);
+        } else {
+            cordova.getActivity().startActivityForResult(intent, CUSTOM_TAB_REQUEST_CODE);
         }
     }
 
-    private boolean warmUp() {
-        CustomTabsClient client = mCustomTabPluginHelper.getClient();
-        return client != null && client.warmup(0);
-    }
-
-    private boolean mayLaunchUrl(String url) {
-        if (mCustomTabPluginHelper.getClient() != null) {
-            CustomTabsSession session = getSession();
-            return session != null && session.mayLaunchUrl(Uri.parse(url), null, null);
-        }
-        return false;
-    }
-
-    private int getColor(String color) {
-        if (TextUtils.isEmpty(color)) return Color.LTGRAY;
-        try {
-            return Color.parseColor(color);
-        } catch (IllegalArgumentException ex) {
-            Log.i(TAG, "Unable to parse Color: " + color);
-            return Color.LTGRAY;
-        }
-    }
-
-    private CustomTabsSession getSession() {
-        return mCustomTabPluginHelper.getSession();
-    }
-
-    private boolean bindCustomTabsService() {
-        return mCustomTabPluginHelper.bindCustomTabsService(cordova.getActivity());
-    }
-
-    private boolean unbindCustomTabsService() {
-        return mCustomTabPluginHelper.unbindCustomTabsService(cordova.getActivity());
+    private int getIdentifier(String name, String defType) {
+        Activity activity = cordova.getActivity();
+        return activity.getResources().getIdentifier(name, defType, activity.getPackageName());
     }
 
     @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
-        super.onActivityResult(requestCode, resultCode, intent);
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == CUSTOM_TAB_REQUEST_CODE) {
-            JSONObject result = new JSONObject();
             try {
+                JSONObject result = new JSONObject();
                 result.put("event", "closed");
+                if (callbackContext != null) {
+                    callbackContext.success(result);
+                    callbackContext = null;
+                }
             } catch (JSONException e) {
                 e.printStackTrace();
             }
-
-            if (callbackContext != null) {
-                callbackContext.success(result);
-                callbackContext = null;
-            }
         }
-    }
-
-    private int getIdentifier(String name, String type) {
-        final Activity activity = cordova.getActivity();
-        return activity.getResources().getIdentifier(name, type, activity.getPackageName());
-    }
-
-    @Override
-    public void onStop() {
-        wasConnected = unbindCustomTabsService();
-        super.onStop();
-    }
-
-    @Override
-    public void onStart() {
-        if (wasConnected) {
-            bindCustomTabsService();
-        }
-        super.onStart();
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        mCustomTabPluginHelper.setConnectionCallback(null);
+        super.onActivityResult(requestCode, resultCode, data);
     }
 }
